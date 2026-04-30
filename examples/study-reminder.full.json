@@ -1,0 +1,50 @@
+{
+  "protocol": "codex_tavern_event",
+  "schema_version": "1.0",
+  "event_id": "evt_20260429_200000_study_001",
+  "created_at": "2026-04-29T20:00:00+08:00",
+  "ttl_seconds": 0,
+  "event": {
+    "type": "study_reminder",
+    "intent": "gentle_nudge",
+    "priority": "normal",
+    "reason": "用户计划在晚上 8 点开始学习，但尚未确认完成"
+  },
+  "target": {
+    "tavern_character": "girlfriend_study_partner",
+    "conversation_id": "daily_study_checkin",
+    "language": "zh-CN"
+  },
+  "user_context": {
+    "display_name": "主人",
+    "timezone": "Asia/Shanghai",
+    "current_local_time": "20:00",
+    "weekday": "Wednesday",
+    "energy_hint": "evening_possible_fatigue"
+  },
+  "task": {
+    "title": "学习 Python 45 分钟",
+    "subject": "Python",
+    "duration_minutes": 45,
+    "status": "not_started",
+    "suggested_first_step": "打开昨天的笔记，先复习列表和字典部分"
+  },
+  "style": {
+    "persona_mode": "girlfriend",
+    "tone": ["温柔", "亲密", "轻微督促"],
+    "intensity": 0.45,
+    "max_length_chars": 80
+  },
+  "constraints": {
+    "must_include": ["具体任务"],
+    "must_not_include": ["责备", "羞辱", "道德绑架", "威胁", "假装用户已经失败"],
+    "allow_roleplay": true,
+    "allow_emotional_pressure": false
+  },
+  "delivery": {
+    "channel": "wechat",
+    "fallback_channel": "tavern",
+    "require_user_reply": true,
+    "reply_options": ["完成了", "推迟30分钟", "今天跳过"]
+  }
+}

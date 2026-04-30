@@ -1,0 +1,59 @@
+{
+  "response_timeout_ms": 120000,
+  "poll_interval_ms": 1000,
+  "wechat_poll_interval_ms": 2000,
+  "delivery": {
+    "message_mode": "split",
+    "send_interval_ms": 6000
+  },
+  "default_target": {
+    "target_character": "girlfriend_study_partner",
+    "conversation_id": "daily_study_checkin",
+    "language": "zh-CN"
+  },
+  "wechat": {
+    "default_scope_id": "",
+    "inbound_merge_window_ms": 10000
+  },
+  "bots": [
+    {
+      "id": "default",
+      "enabled": true,
+      "wechat_account_id": "",
+      "wechat_scope_id": "",
+      "target_character": "girlfriend_study_partner",
+      "conversation_id": "daily_study_checkin",
+      "language": "zh-CN"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "daily_study_2000",
+      "bot_id": "default",
+      "enabled": false,
+      "schedule_mode": "fixed",
+      "time": "20:00",
+      "days": [1, 2, 3, 4, 5, 6, 7],
+      "timezone": "Asia/Shanghai",
+      "intent": "温和提醒，仅供参考",
+      "task": "学习 Python 45 分钟",
+      "suggested_first_step": "打开昨天的笔记，先复习列表和字典",
+      "delivery_channel": "wechat"
+    },
+    {
+      "id": "daily_random_checkin",
+      "bot_id": "default",
+      "enabled": false,
+      "schedule_mode": "daily_random",
+      "time": "12:00",
+      "random_window_start": "09:30",
+      "random_window_end": "22:30",
+      "days": [1, 2, 3, 4, 5, 6, 7],
+      "timezone": "Asia/Shanghai",
+      "intent": "随意问候，仅供参考",
+      "task": "在今天一个自然的时间点主动发来一条轻松问候，结合当前时间判断她此刻可能在做什么。",
+      "suggested_first_step": "不要像闹钟或通知，像真实聊天里突然想起用户后自然发起一句。",
+      "delivery_channel": "wechat"
+    }
+  ]
+}

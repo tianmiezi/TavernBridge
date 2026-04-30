@@ -1,0 +1,18 @@
+{
+  "protocol": "codex_tavern_event",
+  "schema_version": "1.0",
+  "event_id": "evt_20260429_200000_001",
+  "created_at": "2026-04-29T20:00:00+08:00",
+  "ttl_seconds": 0,
+  "type": "study_reminder",
+  "intent": "gentle_nudge",
+  "target_character": "girlfriend_study_partner",
+  "conversation_id": "daily_study_checkin",
+  "language": "zh-CN",
+  "task": "学习 Python 45 分钟",
+  "suggested_first_step": "打开昨天的笔记，先复习列表和字典",
+  "tone": ["温柔", "亲密", "轻微督促"],
+  "max_length_chars": 80,
+  "delivery_channel": "wechat",
+  "forbidden": ["责备", "羞辱", "道德绑架"]
+}

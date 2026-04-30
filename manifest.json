@@ -1,0 +1,13 @@
+{
+  "manifest_version": 1,
+  "id": "codex_tavern_bridge",
+  "display_name": "Codex 酒馆桥接",
+  "version": "0.1.0",
+  "description": "接收 Codex 自动化事件，交给 SillyTavern 角色生成回复，并把过滤后的正文回传给外部桥接/通知程序。",
+  "author": "CodexTavernBridge contributors",
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "homePage": "https://github.com/SillyTavern/SillyTavern"
+}

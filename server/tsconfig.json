@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "allowJs": true,
+    "checkJs": false,
+    "rootDir": ".",
+    "outDir": "dist",
+    "strict": false,
+    "noEmitOnError": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "types": ["node"]
+  },
+  "include": [
+    "src/cli.ts",
+    "src/index.ts",
+    "src/relay/**/*.ts",
+    "src/platforms/weixin/account_store.ts",
+    "src/platforms/weixin/config.ts",
+    "src/platforms/weixin/text_client.ts",
+    "src/platforms/weixin/official/api.ts",
+    "src/platforms/weixin/official/context_tokens.ts",
+    "src/platforms/weixin/official/login.ts",
+    "src/platforms/weixin/official/sync_buf.ts",
+    "src/platforms/weixin/official/types.ts"
+  ],
+  "exclude": [
+    "dist",
+    "node_modules"
+  ]
+}

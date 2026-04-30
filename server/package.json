@@ -1,0 +1,25 @@
+{
+  "name": "codex-tavern-bridge-server",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node start-integrated.cjs",
+    "bridge": "node bridge-server.cjs",
+    "relay": "tsx src/cli.ts weixin serve --cwd .",
+    "login": "tsx src/cli.ts weixin login",
+    "clear-context": "tsx src/cli.ts weixin clear-context",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  }
+}
