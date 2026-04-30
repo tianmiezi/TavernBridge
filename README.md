@@ -1,4 +1,4 @@
-# Codex Tavern Bridge
+# Tavern Bridge
 
 把微信 ClawBot / OpenClaw 消息转进 SillyTavern 指定角色聊天，再把角色回复发回微信。
 
@@ -24,13 +24,6 @@
 SillyTavern/public/scripts/extensions/third-party/CodexTavernBridge
 ```
 
-推荐用 git clone：
-
-```powershell
-cd SillyTavern/public/scripts/extensions/third-party
-git clone <repo-url> CodexTavernBridge
-```
-
 需要 Node.js 24+。
 
 ## 登录微信
@@ -40,13 +33,13 @@ git clone <repo-url> CodexTavernBridge
 双击：
 
 ```text
-CodexTavernBridge/login-wechat.bat
+TavernBridge/login-wechat.bat
 ```
 
 或者手动运行：
 
 ```powershell
-cd CodexTavernBridge/server
+cd TavernBridge/server
 npm run login
 ```
 
@@ -63,7 +56,7 @@ npm run login
 登录完成后，双击：
 
 ```text
-CodexTavernBridge/start-bridge.bat
+TavernBridge/start-bridge.bat
 ```
 
 它会自动进入 `server/`，执行 `npm install`，然后启动两个本地服务：
@@ -76,7 +69,7 @@ http://127.0.0.1:8790  管理网页
 如果想手动启动：
 
 ```powershell
-cd CodexTavernBridge/server
+cd TavernBridge/server
 npm install
 npm start
 ```
@@ -85,7 +78,7 @@ npm start
 
 1. 启动 SillyTavern。
 2. 打开你要使用的角色聊天。
-3. 在扩展设置里找到 `Codex 酒馆桥接`。
+3. 在扩展设置里找到 `酒馆桥接`。
 4. 桥接地址填：
 
 ```text
@@ -165,19 +158,7 @@ http://127.0.0.1:8790
 - 本地伴生服务必须保持运行。
 - 微信 ClawBot / OpenClaw 的入口不是普通微信好友列表里的多个机器人联系人；同一个微信号通常只有一个 ClawBot 入口。
 - 如果想在一个大号里看到多个“联系人式机器人”，通常需要小号转发方案；本扩展当前优先支持 ClawBot 单入口和后端多角色路由。
-
-## 发布前检查
-
-如果要上传到 GitHub，请确认不要上传这些本地文件：
-
-```text
-server/node_modules/
-server/config/tavern-relay.config.json
-server/config/*.local.json
-*.log
-```
-
-这些已经写入 `.gitignore`。如果你不是用 git 提交，而是手动打包或网页上传，也要手动排除它们。
+- 本拓展暂时还未实现单主账号对应多联系人的功能，有需要的朋友，请静待更新
 
 真实微信登录态保存在：
 
@@ -185,25 +166,5 @@ server/config/*.local.json
 %USERPROFILE%\.codexbridge-weixin
 ```
 
-这个目录不在扩展文件夹内，不需要上传。
-
-## 目录
-
-```text
-CodexTavernBridge/
-  manifest.json
-  index.js
-  style.css
-  start-bridge.bat
-  login-wechat.bat
-  clear-wechat-context.bat
-  server/
-    bridge-server.cjs
-    start-integrated.cjs
-    src/
-      cli.ts
-      platforms/weixin/
-      relay/
-    config/
       tavern-relay.config.example.json
 ```
