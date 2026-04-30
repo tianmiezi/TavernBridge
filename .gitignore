@@ -1,0 +1,10 @@
+server/node_modules/
+server/config/tavern-relay.config.json
+server/config/*.local.json
+server/config/*.tmp
+server/.env
+.env
+.env.*
+*.log
+*.bak
+*.tmp
