@@ -17,14 +17,19 @@
 - 独立管理页：`http://127.0.0.1:8790`。
 
 ## 安装
-
-把本项目放到：
+直接从酒馆使用项目链接安装：
 
 ```text
-SillyTavern/public/scripts/extensions/third-party/CodexTavernBridge
+https://github.com/tianmiezi/TavernBridge
 ```
 
-需要 Node.js 24+。
+或者把本项目放到：
+
+```text
+SillyTavern/public/scripts/extensions/third-party
+```
+
+注意需要 Node.js 24+。
 
 ## 登录微信
 
@@ -172,14 +177,3 @@ http://127.0.0.1:8790
 - 微信 ClawBot / OpenClaw 的入口不是普通微信好友列表里的多个机器人联系人；同一个微信号通常只有一个 ClawBot 入口。
 - 如果想在一个大号里看到多个“联系人式机器人”，通常需要小号转发方案；本扩展当前优先支持 ClawBot 单入口和后端多角色路由。
 - 本拓展暂时还未实现单主账号对应多联系人的功能，有需要的朋友，请静待更新
-
-真实微信登录态保存在：
-
-```text
-%USERPROFILE%\.codexbridge-weixin
-```
-
-      tavern-relay.config.example.json
-```
-
-如果重复登陆后交互异常，可以检查该目录是否配置正确，停止所有相关任务后删除旧有登陆信息重试。
