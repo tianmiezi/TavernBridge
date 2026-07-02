@@ -59,6 +59,26 @@ export function clearContextTokensForAccount(accountsDir: string, accountId: str
   }
 }
 
+export function clearContextToken(
+  accountsDir: string,
+  accountId: string,
+  userId: string,
+): boolean {
+  const key = contextTokenKey(accountId, userId);
+  const existed = contextTokenStore.delete(key);
+  if (existed) {
+    persistContextTokens(accountsDir, accountId);
+    return true;
+  }
+
+  restoreContextTokens(accountsDir, accountId);
+  const restored = contextTokenStore.delete(key);
+  if (restored) {
+    persistContextTokens(accountsDir, accountId);
+  }
+  return restored;
+}
+
 export function setContextToken(
   accountsDir: string,
   accountId: string,

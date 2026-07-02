@@ -2,9 +2,9 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { WeixinAccountStore } from './account_store.js';
 import { loadWeixinConfig, validateWeixinConfig, type WeixinConfig } from './config.js';
-import { getUpdates, sendMessage } from './official/api.js';
+import { getConfig, getUpdates, sendMessage, sendTyping } from './official/api.js';
 import { getContextToken, restoreContextTokens, setContextToken } from './official/context_tokens.js';
-import { MessageItemType, MessageState, MessageType, type MessageItem, type WeixinMessage } from './official/types.js';
+import { MessageItemType, MessageState, MessageType, TypingStatus, type MessageItem, type WeixinMessage } from './official/types.js';
 
 export interface WeixinInboundText {
   externalScopeId: string;
@@ -41,6 +41,7 @@ export class WeixinTextClient {
 
   readonly accountStore: WeixinAccountStore;
   readonly config: WeixinConfig;
+  private readonly typingTickets = new Map<string, { ticket: string; expiresAt: number }>();
 
   start(): void {
     const errors = validateWeixinConfig(this.config);
@@ -106,6 +107,51 @@ export class WeixinTextClient {
     }
   }
 
+  async sendTypingStatus(externalScopeId: string, status: number = TypingStatus.TYPING): Promise<boolean> {
+    const contextToken = getContextToken(this.config.accountsDir, this.config.accountId ?? '', externalScopeId);
+    if (!contextToken) {
+      debugWeixinText('typing_context_token_missing', {
+        accountId: this.config.accountId,
+        externalScopeId,
+        status,
+      });
+      return false;
+    }
+
+    const typingTicket = await this.getTypingTicket(externalScopeId, contextToken);
+    if (!typingTicket) {
+      return false;
+    }
+
+    const result = await sendTyping({
+      baseUrl: this.config.baseUrl,
+      token: this.config.token,
+      ilink_user_id: externalScopeId,
+      typing_ticket: typingTicket,
+      status,
+    });
+    const code = Number((result as { errcode?: number }).errcode ?? result.ret ?? 0);
+    if (code !== 0) {
+      debugWeixinText('typing_failed', {
+        accountId: this.config.accountId,
+        externalScopeId,
+        code,
+        errmsg: result.errmsg,
+        status,
+      }, true);
+      if (code === -2 || code === -14) {
+        this.typingTickets.delete(externalScopeId);
+      }
+      return false;
+    }
+    debugWeixinText('typing_sent', {
+      accountId: this.config.accountId,
+      externalScopeId,
+      status,
+    });
+    return true;
+  }
+
   private normalizeMessage(message: WeixinMessage): WeixinInboundText | null {
     const senderId = stringValue(message.from_user_id);
     if (!senderId || senderId === this.config.accountId) {
@@ -121,6 +167,18 @@ export class WeixinTextClient {
     const contextToken = stringValue(message.context_token);
     if (contextToken) {
       setContextToken(this.config.accountsDir, this.config.accountId ?? '', senderId, contextToken);
+      debugWeixinText('context_token_stored', {
+        accountId: this.config.accountId,
+        senderId,
+        messageId: stringValue(message.message_id),
+        tokenLength: contextToken.length,
+      });
+    } else {
+      debugWeixinText('context_token_missing', {
+        accountId: this.config.accountId,
+        senderId,
+        messageId: stringValue(message.message_id),
+      });
     }
     return {
       externalScopeId: senderId,
@@ -140,6 +198,90 @@ export class WeixinTextClient {
     }
     return true;
   }
+
+  private async getTypingTicket(externalScopeId: string, contextToken: string): Promise<string | null> {
+    const cached = this.typingTickets.get(externalScopeId);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.ticket;
+    }
+
+    const result = await getConfig({
+      baseUrl: this.config.baseUrl,
+      token: this.config.token,
+      ilink_user_id: externalScopeId,
+      context_token: contextToken,
+    });
+    const code = Number((result as { errcode?: number }).errcode ?? result.ret ?? 0);
+    const ticket = stringValue(result.typing_ticket);
+    if (code !== 0 || !ticket) {
+      debugWeixinText('typing_ticket_failed', {
+        accountId: this.config.accountId,
+        externalScopeId,
+        code,
+        errmsg: result.errmsg,
+        hasTicket: Boolean(ticket),
+      }, true);
+      return null;
+    }
+
+    this.typingTickets.set(externalScopeId, {
+      ticket,
+      expiresAt: Date.now() + 23 * 60 * 60 * 1000,
+    });
+    debugWeixinText('typing_ticket_stored', {
+      accountId: this.config.accountId,
+      externalScopeId,
+      ticketLength: ticket.length,
+    });
+    return ticket;
+  }
+}
+
+async function sendTextChunkOnce({
+  config,
+  externalScopeId,
+  text,
+  contextToken,
+}: {
+  config: WeixinConfig;
+  externalScopeId: string;
+  text: string;
+  contextToken: string | null;
+}): Promise<number> {
+  debugWeixinText('send_text_chunk', {
+    accountId: config.accountId,
+    externalScopeId,
+    textLength: text.length,
+    hasContextToken: Boolean(contextToken),
+    contextTokenLength: contextToken?.length ?? 0,
+  });
+  const result = await sendMessage({
+    baseUrl: config.baseUrl,
+    token: config.token,
+    msg: {
+      from_user_id: '',
+      to_user_id: externalScopeId,
+      client_id: `codexbridge-weixin-${crypto.randomUUID()}`,
+      message_type: MessageType.BOT,
+      message_state: MessageState.FINISH,
+      item_list: [{
+        type: MessageItemType.TEXT,
+        text_item: { text },
+      }],
+      ...(contextToken ? { context_token: contextToken } : {}),
+    },
+  });
+  const code = Number((result as { errcode?: number }).errcode ?? result.ret ?? 0);
+  if (code !== 0) {
+    debugWeixinText('send_text_chunk_failed', {
+      accountId: config.accountId,
+      externalScopeId,
+      code,
+      errmsg: result.errmsg,
+      hasContextToken: Boolean(contextToken),
+    }, true);
+  }
+  return code;
 }
 
 async function sendTextChunkWithRetry({
@@ -158,27 +300,19 @@ async function sendTextChunkWithRetry({
   let lastError = '';
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     const contextToken = getContextToken(config.accountsDir, config.accountId ?? '', externalScopeId);
-    const result = await sendMessage({
-      baseUrl: config.baseUrl,
-      token: config.token,
-      msg: {
-        from_user_id: '',
-        to_user_id: externalScopeId,
-        client_id: `codexbridge-weixin-${crypto.randomUUID()}`,
-        message_type: MessageType.BOT,
-        message_state: MessageState.FINISH,
-        item_list: [{
-          type: MessageItemType.TEXT,
-          text_item: { text },
-        }],
-        ...(contextToken ? { context_token: contextToken } : {}),
-      },
-    });
-    const code = Number((result as { errcode?: number }).errcode ?? result.ret ?? 0);
+    const code = await sendTextChunkOnce({ config, externalScopeId, text, contextToken });
+    const usedContextToken = Boolean(contextToken);
+    if (code === -2 && contextToken) {
+      debugWeixinText('context_token_retained_after_minus_2', {
+        accountId: config.accountId,
+        externalScopeId,
+        reason: 'OpenClaw returned -2 while a context_token was present; keeping the token for later inbound refresh or diagnostics.',
+      }, true);
+    }
     if (code === 0) {
       return;
     }
-    lastError = `WeChat send failed: ${code} ${result.errmsg ?? ''}`.trim();
+    lastError = `WeChat send failed: ${code}; target=${externalScopeId}; context_token=${usedContextToken ? 'yes' : 'no'}`;
     if (attempt < retries) {
       await sleep(retryDelayMs);
     }
@@ -235,6 +369,13 @@ function splitLogicalMessages(text: string): string[] {
   }
   const looksLikeShortWechatMessages = lines.every((line) => line.length <= 120 && !line.includes('|'));
   return looksLikeShortWechatMessages ? lines : [normalized];
+}
+
+function debugWeixinText(event: string, payload: Record<string, unknown>, force = false): void {
+  if (!force && process.env.CODEXBRIDGE_DEBUG_WEIXIN !== '1') {
+    return;
+  }
+  process.stderr.write(`[weixin-text] ${event} ${JSON.stringify(payload)}\n`);
 }
 
 function stringValue(value: unknown): string | null {

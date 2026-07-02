@@ -3,6 +3,14 @@ export const SCHEMA_VERSION = '1.0';
 
 export type RelayEventType = 'user_reply' | 'scheduled_task';
 
+export interface RelayAttachment {
+  type: 'text' | 'image' | 'voice' | 'file' | 'video';
+  text?: string;
+  local_path?: string;
+  mime?: string;
+  created_at: string;
+}
+
 export interface RelayTarget {
   target_character: string;
   conversation_id: string;
@@ -15,6 +23,7 @@ export interface RelayEvent {
   event_id: string;
   bot_id?: string;
   created_at: string;
+  ttl_seconds?: number;
   type: RelayEventType;
   intent: string;
   target_character: string;
@@ -28,9 +37,10 @@ export interface RelayEvent {
   user_reply?: {
     text: string;
     received_at: string;
-    source: 'wechat';
+    source: 'wechat' | 'wechat_uiauto_account';
     external_scope_id: string;
   };
+  attachments?: RelayAttachment[];
   delivery_channel: 'wechat' | 'tavern';
   wechat_scope_id?: string;
   metadata?: Record<string, unknown>;

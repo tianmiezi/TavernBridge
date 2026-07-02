@@ -6,8 +6,8 @@
   "ttl_seconds": 0,
   "type": "user_reply",
   "intent": "continue_conversation",
-  "target_character": "girlfriend_study_partner",
-  "conversation_id": "daily_study_checkin",
+  "target_character": "default_character",
+  "conversation_id": "default_conversation",
   "language": "zh-CN",
   "user_reply": {
     "text": "我先推迟 30 分钟，刚吃完饭有点困。",

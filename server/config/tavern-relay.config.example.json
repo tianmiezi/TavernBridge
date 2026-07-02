@@ -4,16 +4,16 @@
   "wechat_poll_interval_ms": 2000,
   "delivery": {
     "message_mode": "split",
-    "send_interval_ms": 6000
+    "send_interval_ms": 800
   },
   "default_target": {
-    "target_character": "girlfriend_study_partner",
-    "conversation_id": "daily_study_checkin",
+    "target_character": "default_character",
+    "conversation_id": "default_conversation",
     "language": "zh-CN"
   },
   "wechat": {
     "default_scope_id": "",
-    "inbound_merge_window_ms": 10000
+    "inbound_merge_window_ms": 3500
   },
   "bots": [
     {
@@ -21,8 +21,9 @@
       "enabled": true,
       "wechat_account_id": "",
       "wechat_scope_id": "",
-      "target_character": "girlfriend_study_partner",
-      "conversation_id": "daily_study_checkin",
+      "wechat_transport": "auto",
+      "target_character": "default_character",
+      "conversation_id": "default_conversation",
       "language": "zh-CN"
     }
   ],
@@ -33,11 +34,20 @@
       "enabled": false,
       "schedule_mode": "fixed",
       "time": "20:00",
-      "days": [1, 2, 3, 4, 5, 6, 7],
+      "days": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
       "timezone": "Asia/Shanghai",
       "intent": "温和提醒，仅供参考",
       "task": "学习 Python 45 分钟",
       "suggested_first_step": "打开昨天的笔记，先复习列表和字典",
+      "wechat_transport": "auto",
       "delivery_channel": "wechat"
     },
     {
@@ -48,12 +58,44 @@
       "time": "12:00",
       "random_window_start": "09:30",
       "random_window_end": "22:30",
-      "days": [1, 2, 3, 4, 5, 6, 7],
+      "days": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
       "timezone": "Asia/Shanghai",
       "intent": "随意问候，仅供参考",
-      "task": "在今天一个自然的时间点主动发来一条轻松问候，结合当前时间判断她此刻可能在做什么。",
+      "task": "在今天一个自然的时间点主动发来一条轻松问候，结合当前时间判断用户此刻可能在做什么。",
       "suggested_first_step": "不要像闹钟或通知，像真实聊天里突然想起用户后自然发起一句。",
+      "wechat_transport": "auto",
       "delivery_channel": "wechat"
     }
-  ]
+  ],
+  "uiauto_accounts": [
+    {
+      "id": "windows_alt_1",
+      "enabled": false,
+      "worker_base_url": "http://127.0.0.1:8795",
+      "owner_contact_name": "your main account contact remark, not File Transfer Assistant",
+      "bot_id": "default",
+      "target_character": "",
+      "conversation_id": "",
+      "language": "zh-CN",
+      "poll_interval_ms": 1000
+    }
+  ],
+  "agenda": {
+    "parser": {
+      "enabled": true,
+      "timezone": "Asia/Shanghai",
+      "entry_format": "x月x日，用户/角色约定事项：……",
+      "system_prompt": "你是 CodexTavernBridge 的日程解析器。\n请从用户输入中提取明确的日期、事项和事项所属者，不要补写用户没有提供的信息。\n只返回合法 JSON，不要使用 Markdown 代码块。\nJSON 格式：{\"entries\":[{\"date_text\":\"x月x日\",\"owner\":\"user|character\",\"item\":\"约定事项\"}]}\nowner 表示事项属于谁：用户本人使用 user，角色本人使用 character。\n无法确认日期或事项时不要生成条目；解析结果仅供用户预览，不会直接保存。",
+      "user_prompt_template": "当前日期：{{today}}\n时区：{{timezone}}\n目标格式：{{format}}\n\n请解析下面的日程输入：\n{{input}}"
+    },
+    "entries": []
+  }
 }

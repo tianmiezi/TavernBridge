@@ -5,6 +5,18 @@ export interface RelayState {
   emittedTasks: Record<string, string>;
   pendingFollowups: Record<string, PendingFollowup>;
   randomTaskTimes: Record<string, string>;
+  uiauto: Record<string, UiautoAccountState>;
+}
+
+export interface UiautoAccountState {
+  recentSignatures: string[];
+  lastScanAt?: string;
+  lastError?: string;
+  deviceOnline?: boolean;
+  lastScreenshotPath?: string;
+  lastDumpPath?: string;
+  lastMessageSignature?: string;
+  ownerContactName?: string;
 }
 
 export interface PendingFollowup {
@@ -23,10 +35,10 @@ export class RelayStateStore {
 
   read(): RelayState {
     if (!fs.existsSync(this.filePath)) {
-      return { emittedTasks: {}, pendingFollowups: {}, randomTaskTimes: {} };
+      return defaultRelayState();
     }
     try {
-      const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf8')) as Partial<RelayState>;
+      const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf8')) as Partial<RelayState> & { altWechat?: unknown };
       return {
         emittedTasks: parsed.emittedTasks && typeof parsed.emittedTasks === 'object'
           ? parsed.emittedTasks
@@ -37,9 +49,10 @@ export class RelayStateStore {
         randomTaskTimes: parsed.randomTaskTimes && typeof parsed.randomTaskTimes === 'object'
           ? parsed.randomTaskTimes as Record<string, string>
           : {},
+        uiauto: normalizeUiautoState(parsed.uiauto ?? parsed.altWechat),
       };
     } catch {
-      return { emittedTasks: {}, pendingFollowups: {}, randomTaskTimes: {} };
+      return defaultRelayState();
     }
   }
 
@@ -49,4 +62,31 @@ export class RelayStateStore {
     fs.writeFileSync(tempPath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
     fs.renameSync(tempPath, this.filePath);
   }
+}
+
+function defaultRelayState(): RelayState {
+  return { emittedTasks: {}, pendingFollowups: {}, randomTaskTimes: {}, uiauto: {} };
+}
+
+function normalizeUiautoState(raw: unknown): Record<string, UiautoAccountState> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return {};
+  }
+  const result: Record<string, UiautoAccountState> = {};
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    const item = value && typeof value === 'object' ? value as Partial<UiautoAccountState> : {};
+    result[id] = {
+      recentSignatures: Array.isArray(item.recentSignatures)
+        ? item.recentSignatures.map((signature) => String(signature)).filter(Boolean).slice(0, 100)
+        : [],
+      lastScanAt: item.lastScanAt ? String(item.lastScanAt) : undefined,
+      lastError: item.lastError ? String(item.lastError) : undefined,
+      deviceOnline: item.deviceOnline === true,
+      lastScreenshotPath: item.lastScreenshotPath ? String(item.lastScreenshotPath) : undefined,
+      lastDumpPath: item.lastDumpPath ? String(item.lastDumpPath) : undefined,
+      lastMessageSignature: item.lastMessageSignature ? String(item.lastMessageSignature) : undefined,
+      ownerContactName: item.ownerContactName ? String(item.ownerContactName) : undefined,
+    };
+  }
+  return result;
 }

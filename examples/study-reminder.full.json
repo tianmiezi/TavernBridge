@@ -11,8 +11,8 @@
     "reason": "用户计划在晚上 8 点开始学习，但尚未确认完成"
   },
   "target": {
-    "tavern_character": "girlfriend_study_partner",
-    "conversation_id": "daily_study_checkin",
+    "tavern_character": "default_character",
+    "conversation_id": "default_conversation",
     "language": "zh-CN"
   },
   "user_context": {

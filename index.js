@@ -5,6 +5,7 @@ import {
     characters,
     eventSource,
     event_types,
+    getCurrentChatId,
     saveSettingsDebounced,
     selectCharacterById,
     sendMessageAsUser,
@@ -15,28 +16,25 @@ const EXT_ID = "codex_tavern_bridge";
 const PROTOCOL = "codex_tavern_event";
 const REPLY_PROTOCOL = "codex_tavern_reply";
 const MAX_LOG_ITEMS = 50;
-const LEGACY_TEMPLATE_MARKERS = [
-    "[Codex 自动化事件]",
-    "[Codex Automation Event]",
-    "metadata_json:",
-    "{{json}}",
-];
+const EXTENSION_RELATIVE_PATH = "public/scripts/extensions/third-party/CodexTavernBridge";
+const RUNNER_HEARTBEAT_MS = 10000;
+const RUNNER_RESTORE_DELAY_MS = 1500;
 
 const DEFAULT_SETTINGS = {
     enabled: true,
     bridgeUrl: "http://127.0.0.1:8787",
     botId: "default",
-    autoConnect: false,
+    autoConnect: true,
     autoSwitchCharacter: true,
     requireTargetCharacter: false,
     blockDuplicateEvents: true,
+    keepAwake: true,
     generateAfterInbound: true,
     autoSendCharacterReplies: true,
     outboundRegex: "",
     outboundRegexFlags: "",
     outboundRegexGroup: 1,
     blockWhenRegexMisses: true,
-    inboundTemplate: "",
     state: {
         processedEventIds: [],
         lastEventAt: "",
@@ -52,6 +50,29 @@ let autoSendTimer = null;
 let lastAutoSentSignature = "";
 let lastBridgeReplySignature = "";
 let suppressAutoSendUntil = 0;
+let wakeLock = null;
+let sseGeneration = 0;
+let wakeLockLogShown = false;
+let wakeLockWarnShown = false;
+let bridgeOwnerToken = null;
+let runnerHeartbeatTimer = null;
+let runnerHeartbeatInFlight = false;
+let runnerWorker = null;
+let runnerWorkerUrl = "";
+let runnerRestoreTimer = null;
+let bridgeManuallyDisconnected = false;
+
+function keepaliveParams() {
+    return new URLSearchParams(window.location.search || "");
+}
+
+function isKeepalivePage() {
+    return keepaliveParams().get("ctb_keepalive") === "1";
+}
+
+function isBridgeConnected() {
+    return Boolean(sse && sse.readyState === EventSource.OPEN);
+}
 
 function cloneDefaults(value) {
     return JSON.parse(JSON.stringify(value));
@@ -67,10 +88,6 @@ function settings() {
             ...(extension_settings[EXT_ID].state || {}),
         },
     };
-    if (LEGACY_TEMPLATE_MARKERS.some(marker => String(extension_settings[EXT_ID].inboundTemplate || "").includes(marker))) {
-        extension_settings[EXT_ID].inboundTemplate = "";
-        saveSettingsDebounced();
-    }
     return extension_settings[EXT_ID];
 }
 
@@ -145,6 +162,62 @@ function saveInputValue(id, key, transform = value => value) {
     });
 }
 
+function randomId(prefix = "ctb") {
+    if (window.crypto?.randomUUID) {
+        return `${prefix}_${window.crypto.randomUUID()}`;
+    }
+    return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+}
+
+function tavernClientId() {
+    const key = `${EXT_ID}_client_id`;
+    let value = window.sessionStorage?.getItem(key);
+    if (!value) {
+        value = randomId("tavern");
+        window.sessionStorage?.setItem(key, value);
+    }
+    return value;
+}
+
+function ownerToken() {
+    const key = `${EXT_ID}_owner_token`;
+    bridgeOwnerToken = bridgeOwnerToken || window.sessionStorage?.getItem(key) || randomId("owner");
+    window.sessionStorage?.setItem(key, bridgeOwnerToken);
+    return bridgeOwnerToken;
+}
+
+function bridgeOwnerKey(botId) {
+    return `${EXT_ID}_owner_${botKey(botId)}`;
+}
+
+function botKey(botId) {
+    return String(botId || "default").trim() || "default";
+}
+
+function readBridgeOwner(botId) {
+    try {
+        const raw = window.localStorage?.getItem(bridgeOwnerKey(botId));
+        return raw ? JSON.parse(raw) : null;
+    } catch {
+        return null;
+    }
+}
+
+function writeBridgeOwner(botId) {
+    const owner = {
+        client_id: tavernClientId(),
+        owner_token: ownerToken(),
+        claimed_at: new Date().toISOString(),
+    };
+    window.localStorage?.setItem(bridgeOwnerKey(botId), JSON.stringify(owner));
+    return owner;
+}
+
+function isCurrentBridgeOwner(botId) {
+    const owner = readBridgeOwner(botId);
+    return owner?.client_id === tavernClientId() && owner?.owner_token === ownerToken();
+}
+
 function isObject(value) {
     return value && typeof value === "object" && !Array.isArray(value);
 }
@@ -200,6 +273,7 @@ function normalizeInbound(raw) {
         suggested_first_step: String(task.suggested_first_step || envelope.suggested_first_step || ""),
         user_context: isObject(envelope.user_context) ? envelope.user_context : {},
         metadata: isObject(envelope.metadata) ? envelope.metadata : {},
+        attachments: Array.isArray(envelope.attachments) ? envelope.attachments.filter(isObject) : [],
         user_message: userMessage,
         delivery_channel: String(delivery.channel || envelope.delivery_channel || "wechat"),
         fallback_channel: String(delivery.fallback_channel || envelope.fallback_channel || "tavern"),
@@ -279,62 +353,8 @@ async function prepareTarget(event) {
     }
 }
 
-function compactMetadata(event) {
-    return {
-        event_id: event.event_id,
-        bot_id: event.bot_id,
-        created_at: event.created_at,
-        type: event.type,
-        intent: event.intent,
-        priority: event.priority,
-        reason: event.reason,
-        target_character: event.target_character,
-        conversation_id: event.conversation_id,
-        task: {
-            title: event.task_title,
-            status: event.task_status,
-            subject: event.task_subject,
-            duration_minutes: event.duration_minutes || undefined,
-            suggested_first_step: event.suggested_first_step,
-        },
-        user_context: event.user_context,
-        user_message: event.user_message,
-        delivery_channel: event.delivery_channel,
-        reply_to_event_id: event.reply_to_event_id,
-    };
-}
-
 function renderInboundMessage(event) {
-    const customTemplate = String(settings().inboundTemplate || "").trim();
-    if (!customTemplate) {
-        return renderCompactInboundMessage(event);
-    }
-
-    const values = {
-        event_id: event.event_id,
-        bot_id: event.bot_id,
-        created_at: event.created_at,
-        local_time: formatLocalTime(event.created_at),
-        event_label: eventLabel(event),
-        bot_id: event.bot_id,
-        type: event.type,
-        intent: event.intent,
-        priority: event.priority,
-        reason: event.reason,
-        target_character: event.target_character,
-        conversation_id: event.conversation_id,
-        task_title: event.task_title,
-        task_status: event.task_status,
-        task_subject: event.task_subject,
-        suggested_first_step: event.suggested_first_step,
-        user_message: event.user_message,
-        delivery_channel: event.delivery_channel,
-        reply_to_event_id: event.reply_to_event_id,
-        json: JSON.stringify(compactMetadata(event), null, 2),
-    };
-
-    return customTemplate
-        .replace(/\{\{(\w+)\}\}/g, (_, key) => values[key] ?? "");
+    return renderCompactInboundMessage(event);
 }
 
 function renderCompactInboundMessage(event) {
@@ -346,6 +366,14 @@ function renderCompactInboundMessage(event) {
 
     if (event.user_message) {
         lines.push(`用户消息: ${event.user_message}`);
+    }
+
+    if (event.attachments?.length) {
+        for (const attachment of event.attachments) {
+            const type = String(attachment.type || "附件");
+            const text = String(attachment.text || attachment.local_path || "").trim();
+            lines.push(`附件: ${type}${text ? ` - ${text}` : ""}`);
+        }
     }
 
     if (event.task_title) {
@@ -592,6 +620,10 @@ async function postReplyToBridge(event, result, rawReply, status = "ok", error =
 }
 
 async function sendLatestCharacterToBridge(source = "manual") {
+    if (!isBridgeConnected()) {
+        throw new Error("桥接未连接，已阻止发送到微信。");
+    }
+
     const latest = latestCharacterEntryAfter(0);
     const rawReply = String(latest?.message?.mes || "").trim();
     if (!rawReply) {
@@ -630,7 +662,7 @@ async function sendLatestCharacterToBridge(source = "manual") {
 
 function scheduleAutoSendLatest() {
     const cfg = settings();
-    if (!cfg.enabled || !cfg.autoSendCharacterReplies || isProcessing || Date.now() < suppressAutoSendUntil) {
+    if (!cfg.enabled || !cfg.autoSendCharacterReplies || !isBridgeConnected() || isProcessing || Date.now() < suppressAutoSendUntil) {
         return;
     }
     if (autoSendTimer) {
@@ -638,7 +670,7 @@ function scheduleAutoSendLatest() {
     }
     autoSendTimer = setTimeout(async () => {
         autoSendTimer = null;
-        if (isProcessing || !settings().autoSendCharacterReplies || Date.now() < suppressAutoSendUntil) {
+        if (isProcessing || !settings().autoSendCharacterReplies || !isBridgeConnected() || Date.now() < suppressAutoSendUntil) {
             return;
         }
         try {
@@ -679,6 +711,7 @@ async function handleCodexEvent(rawPayload, source = "manual") {
         throw new Error("上一个 Codex 事件仍在处理中。");
     }
 
+    const processingGeneration = sseGeneration;
     isProcessing = true;
     suppressAutoSendUntil = Date.now() + 15000;
     setStatus("正在处理入站事件...", "busy");
@@ -712,6 +745,12 @@ async function handleCodexEvent(rawPayload, source = "manual") {
 
         const filtered = applyOutboundFilter(rawReply);
         if (!filtered.ok) {
+            if (source === "bridge" && (!isBridgeConnected() || processingGeneration !== sseGeneration)) {
+                rememberProcessed(event);
+                appendLog({ level: "warn", event_id: event.event_id, message: "桥接已断开，未回传被拦截回复" });
+                setStatus("桥接已断开，未回传回复", "error");
+                return { event, reply: "", rawReply, blocked: true, disconnected: true };
+            }
             await postReplyToBridge(event, filtered, rawReply, "blocked", filtered.reason);
             rememberProcessed(event);
             appendLog({
@@ -731,6 +770,12 @@ async function handleCodexEvent(rawPayload, source = "manual") {
         settings().state.lastReplyAt = new Date().toISOString();
         saveSettingsDebounced();
 
+        if (source === "bridge" && (!isBridgeConnected() || processingGeneration !== sseGeneration)) {
+            appendLog({ level: "warn", event_id: event.event_id, message: "桥接已断开，未回传生成回复" });
+            setStatus("桥接已断开，未回传回复", "error");
+            return { event, reply: "", rawReply, disconnected: true };
+        }
+
         await postReplyToBridge(event, filtered, rawReply);
         suppressAutoSendUntil = Date.now() + 15000;
         appendLog({
@@ -743,7 +788,7 @@ async function handleCodexEvent(rawPayload, source = "manual") {
     } catch (error) {
         const message = error.message || String(error);
         appendLog({ level: "error", event_id: event?.event_id || rawPayload?.event_id || "", message });
-        if (event) {
+        if (event && (source !== "bridge" || (isBridgeConnected() && processingGeneration === sseGeneration))) {
             await postReplyToBridge(event, { text: "", reason: message }, "", "error", message);
         }
         setStatus(`错误：${message}`, "error");
@@ -751,12 +796,6 @@ async function handleCodexEvent(rawPayload, source = "manual") {
     } finally {
         isProcessing = false;
     }
-}
-
-function parseManualJson() {
-    const textarea = document.getElementById("ctb_manual_payload");
-    if (!textarea) throw new Error("找不到手动 JSON 输入框。");
-    return JSON.parse(textarea.value);
 }
 
 async function checkBridgeHealth(baseUrl) {
@@ -778,12 +817,280 @@ async function checkBridgeHealth(baseUrl) {
     }
 }
 
-async function connectBridge() {
+function bridgeBaseUrl() {
+    return settings().bridgeUrl.replace(/\/+$/, "");
+}
+
+function currentChatId() {
+    try {
+        return getCurrentChatId?.() || "";
+    } catch {
+        return "";
+    }
+}
+
+function runnerHeartbeatPayload(reason = "timer", connected = Boolean(sse)) {
     const cfg = settings();
+    const character = characters?.[this_chid] || {};
+    return {
+        bot_id: botKey(cfg.botId || "default"),
+        client_id: tavernClientId(),
+        owner_token: ownerToken(),
+        reason,
+        connected,
+        processing: Boolean(isProcessing),
+        visible: document.visibilityState === "visible",
+        visibility_state: document.visibilityState,
+        focused: document.hasFocus(),
+        wake_lock: Boolean(wakeLock),
+        character: character.name || "",
+        character_id: String(this_chid ?? ""),
+        chat_id: currentChatId(),
+        last_event_at: cfg.state.lastEventAt || "",
+        last_reply_at: cfg.state.lastReplyAt || "",
+        href: window.location.href,
+        user_agent: navigator.userAgent,
+    };
+}
+
+async function postRunnerHeartbeat(reason = "timer", options = {}) {
+    const baseUrl = bridgeBaseUrl();
+    if (!baseUrl) return;
+    const connected = options.connected ?? Boolean(sse);
+    if (runnerHeartbeatInFlight && connected !== false && !options.beacon) return;
+    const payload = runnerHeartbeatPayload(reason, connected);
+
+    if (options.beacon && navigator.sendBeacon) {
+        try {
+            navigator.sendBeacon(`${baseUrl}/runner/heartbeat`, JSON.stringify(payload));
+            return;
+        } catch {}
+    }
+
+    runnerHeartbeatInFlight = true;
+    try {
+        await fetch(`${baseUrl}/runner/heartbeat`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+            keepalive: Boolean(options.keepalive),
+        });
+    } catch {
+        // The SSE error handler owns visible connection status; heartbeat misses are just liveness hints.
+    } finally {
+        runnerHeartbeatInFlight = false;
+    }
+}
+
+function startRunnerWorker() {
+    if (runnerWorker || !window.Worker || !window.Blob || !window.URL) return;
+    try {
+        const source = `
+            let timer = null;
+            const beat = () => postMessage({ type: "tick", at: Date.now() });
+            self.onmessage = event => {
+                if (event.data?.type === "start") {
+                    clearInterval(timer);
+                    timer = setInterval(beat, event.data.interval || ${RUNNER_HEARTBEAT_MS});
+                    beat();
+                }
+                if (event.data?.type === "stop") {
+                    clearInterval(timer);
+                    timer = null;
+                    close();
+                }
+            };
+        `;
+        runnerWorkerUrl = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+        runnerWorker = new Worker(runnerWorkerUrl);
+        runnerWorker.onmessage = () => {
+            if (sse) {
+                void postRunnerHeartbeat("worker");
+            }
+        };
+        runnerWorker.postMessage({ type: "start", interval: RUNNER_HEARTBEAT_MS });
+    } catch {
+        stopRunnerWorker();
+    }
+}
+
+function stopRunnerWorker() {
+    if (runnerWorker) {
+        try {
+            runnerWorker.postMessage({ type: "stop" });
+            runnerWorker.terminate();
+        } catch {}
+        runnerWorker = null;
+    }
+    if (runnerWorkerUrl) {
+        URL.revokeObjectURL(runnerWorkerUrl);
+        runnerWorkerUrl = "";
+    }
+}
+
+function startRunnerKeepalive() {
+    stopRunnerKeepalive(false);
+    void requestWakeLock();
+    void postRunnerHeartbeat("start");
+    runnerHeartbeatTimer = setInterval(() => {
+        if (sse) {
+            void postRunnerHeartbeat("timer");
+        }
+    }, RUNNER_HEARTBEAT_MS);
+    startRunnerWorker();
+}
+
+function stopRunnerKeepalive(sendOffline = true) {
+    if (runnerHeartbeatTimer) {
+        clearInterval(runnerHeartbeatTimer);
+        runnerHeartbeatTimer = null;
+    }
+    if (runnerRestoreTimer) {
+        clearTimeout(runnerRestoreTimer);
+        runnerRestoreTimer = null;
+    }
+    stopRunnerWorker();
+    if (sendOffline) {
+        void postRunnerHeartbeat("stop", { connected: false, keepalive: true });
+    }
+}
+
+function restoreRunnerSoon(reason = "restore") {
+    if (bridgeManuallyDisconnected) return;
+    if (runnerRestoreTimer) clearTimeout(runnerRestoreTimer);
+    runnerRestoreTimer = setTimeout(() => {
+        runnerRestoreTimer = null;
+        if (sse) {
+            void requestWakeLock();
+            void postRunnerHeartbeat(reason);
+            return;
+        }
+        if (settings().autoConnect && navigator.onLine !== false) {
+            void connectBridge({ claim: false });
+        }
+    }, RUNNER_RESTORE_DELAY_MS);
+}
+
+function adminUrlFromBridgeUrl() {
+    try {
+        const url = new URL(bridgeBaseUrl());
+        url.port = "8790";
+        return url.origin;
+    } catch {
+        return "http://127.0.0.1:8790";
+    }
+}
+
+async function openBridgeLocalTarget(target) {
+    const baseUrl = bridgeBaseUrl();
+    const response = await fetch(`${baseUrl}/local/open`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+        throw new Error(data.error || `local open HTTP ${response.status}`);
+    }
+    return data;
+}
+
+async function copyText(text) {
+    if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+    }
+    return false;
+}
+
+async function connectBridgeWithBackendCheck() {
+    try {
+        await checkBridgeHealth(bridgeBaseUrl());
+    } catch (error) {
+        const message = error.name === "AbortError"
+            ? "后端未响应，请先确认本地服务已启动。"
+            : `后端未响应：${error.message || error}`;
+        setStatus(message, "error");
+        notify("后端未在线。可先打开扩展文件夹，运行 start-bridge.bat。", "error");
+        appendLog({ level: "warn", event_id: "backend", message });
+        return;
+    }
+    await connectBridge({ claim: true });
+}
+
+async function openAdminUi() {
+    const url = adminUrlFromBridgeUrl();
+    window.open(url, "_blank", "noopener,noreferrer");
+    notify(`已打开管理页：${url}`, "success");
+}
+
+async function clearRelayQueue(queue) {
+    const response = await fetch(`${adminUrlFromBridgeUrl()}/api/clear`, {
+        method: "POST",
+        body: JSON.stringify({ queue }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+        throw new Error(data.error || `clear ${queue} HTTP ${response.status}`);
+    }
+    return Number(data.cleared || 0);
+}
+
+async function clearPendingOutboundOnDisconnect() {
+    try {
+        const [outbox, deferred] = await Promise.all([
+            clearRelayQueue("outbox"),
+            clearRelayQueue("deferred"),
+        ]);
+        if (outbox || deferred) {
+            appendLog({ level: "warn", event_id: "disconnect", message: `已清理断开后的待发送队列：待发 ${outbox}，延迟 ${deferred}` });
+        }
+    } catch (error) {
+        appendLog({ level: "warn", event_id: "disconnect", message: `断开后清理待发送队列失败：${error.message || error}` });
+    }
+}
+
+async function openLocalTargetWithFallback(target) {
+    try {
+        await openBridgeLocalTarget(target);
+        notify("已请求系统打开扩展文件夹。", "success");
+    } catch {
+        await copyText(EXTENSION_RELATIVE_PATH).catch(() => false);
+        notify(`后端未在线，无法让系统打开文件夹。已复制扩展相对路径：${EXTENSION_RELATIVE_PATH}`, "error");
+    }
+}
+
+async function claimBridgeOwner(baseUrl, botId) {
+    const owner = writeBridgeOwner(botId);
+    const response = await fetch(`${baseUrl}/owner`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            bot_id: botId,
+            client_id: owner.client_id,
+            owner_token: owner.owner_token,
+        }),
+    });
+    if (!response.ok) {
+        throw new Error(`owner HTTP ${response.status}`);
+    }
+    const data = await response.json();
+    if (data.ok === false) {
+        throw new Error(data.error || "owner claim failed");
+    }
+    return owner;
+}
+
+async function connectBridge(options = {}) {
+    bridgeManuallyDisconnected = false;
+    const cfg = settings();
+    const botId = botKey(cfg.botId || "default");
+    const shouldClaim = options.claim !== false;
     if (sse) {
         sse.close();
         sse = null;
     }
+    const connectionGeneration = ++sseGeneration;
 
     const baseUrl = cfg.bridgeUrl.replace(/\/+$/, "");
     if (!baseUrl) {
@@ -808,12 +1115,53 @@ async function connectBridge() {
         return;
     }
 
-    const botParam = encodeURIComponent(String(cfg.botId || "default").trim() || "default");
-    sse = new EventSource(`${baseUrl}/events?client=tavern&bot_id=${botParam}`);
+    try {
+        if (shouldClaim || !readBridgeOwner(botId) || isCurrentBridgeOwner(botId)) {
+            await claimBridgeOwner(baseUrl, botId);
+        } else {
+            setStatus("已有其他酒馆窗口接管此 Bot ID，点击连接可接管", "error");
+            return;
+        }
+    } catch (error) {
+        const message = `接管桥接失败：${error.message || error}`;
+        setStatus(message, "error");
+        appendLog({ level: "error", event_id: "bridge_owner", message });
+        return;
+    }
 
-    sse.onopen = () => setStatus(`桥接已连接：${cfg.botId || "default"}`, "ok");
-    sse.onerror = () => setStatus("桥接断开或无法访问", "error");
-    sse.onmessage = async message => {
+    const botParam = encodeURIComponent(botId);
+    const clientParam = encodeURIComponent(tavernClientId());
+    const streamParam = encodeURIComponent(randomId("stream"));
+    const ownerParam = encodeURIComponent(ownerToken());
+    const currentSse = new EventSource(`${baseUrl}/events?client=tavern&bot_id=${botParam}&client_id=${clientParam}&owner_token=${ownerParam}&stream_id=${streamParam}`);
+    sse = currentSse;
+
+    currentSse.onopen = () => {
+        if (sse !== currentSse || sseGeneration !== connectionGeneration) return;
+        setStatus(`桥接已连接：${cfg.botId || "default"}`, "ok");
+        startRunnerKeepalive();
+    };
+    currentSse.onerror = () => {
+        if (sse !== currentSse || sseGeneration !== connectionGeneration) return;
+        setStatus("桥接断开或无法访问", "error");
+        currentSse.close();
+        sse = null;
+        stopRunnerKeepalive(false);
+        void postRunnerHeartbeat("sse_error", { connected: false, keepalive: true });
+        restoreRunnerSoon("sse_error");
+    };
+    currentSse.addEventListener("replaced", () => {
+        if (sse !== currentSse || sseGeneration !== connectionGeneration) return;
+        currentSse.close();
+        sse = null;
+        stopRunnerKeepalive();
+        releaseWakeLock();
+        bridgeManuallyDisconnected = true;
+        setStatus("已被另一个同 Bot ID 的酒馆页面接管", "error");
+    });
+    currentSse.onmessage = async message => {
+        if (sse !== currentSse || sseGeneration !== connectionGeneration) return;
+        void postRunnerHeartbeat("message");
         try {
             const payload = JSON.parse(message.data);
             const inbound = payload?.kind === "event" ? payload.event : payload;
@@ -824,32 +1172,78 @@ async function connectBridge() {
     };
 }
 
-function disconnectBridge() {
+function disconnectBridge(reason = "桥接已断开", tone = "", options = {}) {
+    bridgeManuallyDisconnected = options.manual !== false;
+    sseGeneration += 1;
     if (sse) {
         sse.close();
         sse = null;
     }
-    setStatus("桥接已断开", "");
+    stopRunnerKeepalive();
+    releaseWakeLock();
+    if (bridgeManuallyDisconnected) {
+        void clearPendingOutboundOnDisconnect();
+    }
+    setStatus(reason, tone);
 }
 
-function samplePayload() {
-    return {
-        protocol: PROTOCOL,
-        schema_version: "1.0",
-        event_id: `evt_${new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 14)}_study_001`,
-        bot_id: settings().botId || "default",
-        created_at: new Date().toISOString(),
-        ttl_seconds: 900,
-        type: "study_reminder",
-        intent: "gentle_nudge",
-        target_character: "",
-        conversation_id: "daily_study_checkin",
-        language: "zh-CN",
-        task: "学习 Python 45 分钟",
-        suggested_first_step: "打开昨天的笔记，先复习列表和字典",
-        delivery_channel: "wechat",
-    };
+async function requestWakeLock() {
+    if (wakeLock || !settings().keepAwake || !("wakeLock" in navigator) || document.visibilityState !== "visible") {
+        return;
+    }
+    try {
+        wakeLock = await navigator.wakeLock.request("screen");
+        wakeLock.addEventListener("release", () => {
+            wakeLock = null;
+        });
+        if (!wakeLockLogShown) {
+            wakeLockLogShown = true;
+            appendLog({ level: "info", event_id: "wake_lock", message: "前端保活已启用" });
+        }
+    } catch (error) {
+        if (!wakeLockWarnShown) {
+            wakeLockWarnShown = true;
+            appendLog({ level: "warn", event_id: "wake_lock", message: `前端保活不可用：${error.message || error}` });
+        }
+    }
 }
+
+function releaseWakeLock() {
+    if (!wakeLock) return;
+    void wakeLock.release().catch(() => {});
+    wakeLock = null;
+}
+
+document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+        restoreRunnerSoon("visible");
+    } else if (sse) {
+        void postRunnerHeartbeat("hidden");
+    }
+});
+
+window.addEventListener("focus", () => restoreRunnerSoon("focus"));
+window.addEventListener("online", () => restoreRunnerSoon("online"));
+window.addEventListener("pageshow", () => restoreRunnerSoon("pageshow"));
+window.addEventListener("pagehide", () => {
+    if (sse) {
+        void postRunnerHeartbeat("pagehide", { beacon: true, connected: false });
+    }
+});
+window.addEventListener("beforeunload", () => {
+    if (sse) {
+        void postRunnerHeartbeat("beforeunload", { beacon: true, connected: false });
+    }
+});
+
+window.addEventListener("storage", event => {
+    const botId = botKey(settings().botId || "default");
+    if (event.key !== bridgeOwnerKey(botId) || !sse) return;
+    if (!isCurrentBridgeOwner(botId)) {
+        disconnectBridge("已被另一个同 Bot ID 的酒馆页面接管", "error");
+    }
+});
+
 function settingsHtml() {
     return `
 <div id="codex_tavern_bridge_settings" class="codex-tavern-bridge-settings">
@@ -867,31 +1261,30 @@ function settingsHtml() {
         <input id="ctb_bot_id" class="text_pole" type="text" placeholder="default">
         <label for="ctb_outbound_regex">出站正文正则</label>
         <input id="ctb_outbound_regex" class="text_pole" type="text" placeholder="<ctb>([\\s\\S]*?)</ctb>">
-        <label for="ctb_outbound_flags">正则标志</label>
-        <input id="ctb_outbound_flags" class="text_pole" type="text" placeholder="i">
-        <label for="ctb_outbound_group">捕获组编号</label>
-        <input id="ctb_outbound_group" class="text_pole" type="number" min="0" max="20">
       </div>
       <div class="ctb-help">发送正文优先提取所有 &lt;message&gt;...&lt;/message&gt;；没有匹配时才使用下面配置的出站正则。</div>
       <div class="ctb-row">
-        <label class="checkbox_label"><input id="ctb_auto_connect" type="checkbox"> 自动连接桥接</label>
-        <label class="checkbox_label"><input id="ctb_auto_switch" type="checkbox"> 自动切换角色</label>
-        <label class="checkbox_label"><input id="ctb_require_target" type="checkbox"> 必须指定目标角色</label>
-        <label class="checkbox_label"><input id="ctb_generate" type="checkbox"> 入站后自动生成</label>
-        <label class="checkbox_label"><input id="ctb_auto_send_character" type="checkbox"> 角色回复自动发微信</label>
-        <label class="checkbox_label"><input id="ctb_block_regex_miss" type="checkbox"> 正则未命中时拦截</label>
+        <label class="checkbox_label ctb-tip" data-tip="打开酒馆页面时自动尝试连接桥接。若已有其他窗口接管同一个 Bot ID，不会主动抢占。"><input id="ctb_auto_connect" type="checkbox"> 自动连接桥接</label>
+        <label class="checkbox_label ctb-tip" data-tip="连接成功后在当前酒馆页面维持 SSE、heartbeat 与浏览器 Wake Lock；不会另开专用窗口。"><input id="ctb_keep_awake" type="checkbox"> 前端保活</label>
+        <label class="checkbox_label ctb-tip" data-tip="入站事件带 target_character 时，先切换到同名角色卡，再把消息交给酒馆生成。"><input id="ctb_auto_switch" type="checkbox"> 自动切换角色</label>
+        <label class="checkbox_label ctb-tip" data-tip="开启后，入站事件必须能找到目标角色；找不到或未提供 target_character 就报错，避免消息落到误开的聊天。"><input id="ctb_require_target" type="checkbox"> 必须指定目标角色</label>
+        <label class="checkbox_label ctb-tip" data-tip="入站指微信消息或定时任务经桥接服务进入酒馆。开启后，插件会插入该消息并自动触发角色生成回复。"><input id="ctb_generate" type="checkbox"> 入站后自动生成</label>
+        <label class="checkbox_label ctb-tip" data-tip="角色生成结束后，自动提取 <message> 标签正文并回传给桥接服务，由后端发到微信。"><input id="ctb_auto_send_character" type="checkbox"> 角色回复自动发微信</label>
+        <label class="checkbox_label ctb-tip" data-tip="没有找到 <message> 正文，也没有命中出站正文正则时，阻止整段原文被发到微信。"><input id="ctb_block_regex_miss" type="checkbox"> 正则未命中时拦截</label>
       </div>
-      <label for="ctb_inbound_template">入站消息模板</label>
-      <textarea id="ctb_inbound_template" class="text_pole ctb-template" spellcheck="false"></textarea>
       <div class="ctb-row">
-        <button id="ctb_connect" class="menu_button">连接桥接</button>
+        <button id="ctb_connect" class="menu_button">检测并连接桥接</button>
         <button id="ctb_disconnect" class="menu_button">断开连接</button>
-        <button id="ctb_load_sample" class="menu_button">载入示例</button>
-        <button id="ctb_validate" class="menu_button">校验 JSON</button>
-        <button id="ctb_run_manual" class="menu_button">手动运行事件</button>
         <button id="ctb_send_latest" class="menu_button">发送上一条角色回复</button>
       </div>
-      <textarea id="ctb_manual_payload" class="text_pole ctb-payload" spellcheck="false"></textarea>
+      <div class="ctb-launch-panel">
+        <div class="ctb-launch-title">本地入口</div>
+        <div class="ctb-help">连接按钮会先检测后端；需要维护时打开控制台或扩展文件夹。</div>
+        <div class="ctb-row">
+          <button id="ctb_open_admin" class="menu_button">打开控制台</button>
+          <button id="ctb_open_extension_folder" class="menu_button">打开扩展文件夹</button>
+        </div>
+      </div>
       <div id="ctb_log" class="ctb-log"></div>
     </div>
   </div>
@@ -904,50 +1297,34 @@ function bindSettingsUi() {
     $("#ctb_bridge_url").val(cfg.bridgeUrl);
     $("#ctb_bot_id").val(cfg.botId);
     $("#ctb_outbound_regex").val(cfg.outboundRegex);
-    $("#ctb_outbound_flags").val(cfg.outboundRegexFlags);
-    $("#ctb_outbound_group").val(cfg.outboundRegexGroup);
     $("#ctb_auto_connect").prop("checked", cfg.autoConnect);
+    $("#ctb_keep_awake").prop("checked", cfg.keepAwake);
     $("#ctb_auto_switch").prop("checked", cfg.autoSwitchCharacter);
     $("#ctb_require_target").prop("checked", cfg.requireTargetCharacter);
     $("#ctb_generate").prop("checked", cfg.generateAfterInbound);
     $("#ctb_auto_send_character").prop("checked", cfg.autoSendCharacterReplies);
     $("#ctb_block_regex_miss").prop("checked", cfg.blockWhenRegexMisses);
-    $("#ctb_inbound_template").val(cfg.inboundTemplate);
-    $("#ctb_manual_payload").val(JSON.stringify(samplePayload(), null, 2));
 
     saveInputValue("ctb_enabled", "enabled");
     saveInputValue("ctb_bridge_url", "bridgeUrl");
     saveInputValue("ctb_bot_id", "botId", value => String(value || "default").trim() || "default");
     saveInputValue("ctb_outbound_regex", "outboundRegex");
-    saveInputValue("ctb_outbound_flags", "outboundRegexFlags");
-    saveInputValue("ctb_outbound_group", "outboundRegexGroup", value => Number(value || 1));
     saveInputValue("ctb_auto_connect", "autoConnect");
+    saveInputValue("ctb_keep_awake", "keepAwake", value => {
+        if (!value) releaseWakeLock();
+        if (value && sse) void requestWakeLock();
+        return value;
+    });
     saveInputValue("ctb_auto_switch", "autoSwitchCharacter");
     saveInputValue("ctb_require_target", "requireTargetCharacter");
     saveInputValue("ctb_generate", "generateAfterInbound");
     saveInputValue("ctb_auto_send_character", "autoSendCharacterReplies");
     saveInputValue("ctb_block_regex_miss", "blockWhenRegexMisses");
-    saveInputValue("ctb_inbound_template", "inboundTemplate");
 
-    $("#ctb_connect").on("click", connectBridge);
-    $("#ctb_disconnect").on("click", disconnectBridge);
-    $("#ctb_load_sample").on("click", () => $("#ctb_manual_payload").val(JSON.stringify(samplePayload(), null, 2)));
-    $("#ctb_validate").on("click", () => {
-        try {
-            normalizeInbound(parseManualJson());
-            notify("JSON 事件有效。", "success");
-        } catch (error) {
-            notify(error.message || String(error), "error");
-        }
-    });
-    $("#ctb_run_manual").on("click", async () => {
-        try {
-            await handleCodexEvent(parseManualJson(), "manual");
-            notify("手动事件已处理。", "success");
-        } catch (error) {
-            notify(error.message || String(error), "error");
-        }
-    });
+    $("#ctb_connect").on("click", () => connectBridgeWithBackendCheck());
+    $("#ctb_disconnect").on("click", () => disconnectBridge());
+    $("#ctb_open_admin").on("click", () => openAdminUi());
+    $("#ctb_open_extension_folder").on("click", () => openLocalTargetWithFallback("extension"));
     $("#ctb_send_latest").on("click", async () => {
         try {
             await sendLatestCharacterToBridge();
@@ -977,13 +1354,24 @@ async function init() {
         validateEvent: payload => normalizeInbound(payload),
         filterReply: applyOutboundFilter,
         sendLatest: sendLatestCharacterToBridge,
-        connect: connectBridge,
+        connect: () => connectBridge({ claim: true }),
         disconnect: disconnectBridge,
         settings,
     };
 
-    if (settings().autoConnect) {
-        connectBridge();
+    const params = keepaliveParams();
+    if (params.get("ctb_bot_id")) {
+        settings().botId = botKey(params.get("ctb_bot_id"));
+        saveSettingsDebounced();
+    }
+    if (isKeepalivePage() || params.get("ctb_auto_connect") === "1") {
+        settings().autoConnect = true;
+        settings().keepAwake = true;
+        saveSettingsDebounced();
+        appendLog({ level: "info", event_id: "keepalive", message: "当前酒馆页面已作为内部保活页面接入" });
+    }
+    if (settings().autoConnect || params.get("ctb_auto_connect") === "1" || isKeepalivePage()) {
+        connectBridge({ claim: false });
     }
 }
 
