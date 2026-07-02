@@ -48,6 +48,23 @@ export class WeixinAccountStore {
     return this.readJson<SavedWeixinAccount>(this.accountFile(accountId));
   }
 
+  deleteAccount(accountId: string) {
+    const files = [
+      this.accountFile(accountId),
+      this.contextTokensFile(accountId),
+      this.syncFile(accountId),
+    ];
+    let deleted = 0;
+    for (const filePath of files) {
+      if (!fs.existsSync(filePath)) {
+        continue;
+      }
+      fs.unlinkSync(filePath);
+      deleted += 1;
+    }
+    return deleted;
+  }
+
   getContextToken(accountId: string, peerId: string) {
     const tokens = this.readJson<ContextTokenMap>(this.contextTokensFile(accountId)) ?? {};
     const token = tokens?.[peerId];

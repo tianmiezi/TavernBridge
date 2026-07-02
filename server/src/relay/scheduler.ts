@@ -2,14 +2,26 @@ import type { TavernRelayConfig, TavernTaskConfig } from './config.js';
 import { localDateKey, localHourMinute } from './protocol.js';
 import type { RelayState } from './state_store.js';
 
-export function dueTasks(config: TavernRelayConfig, state: RelayState, now = new Date()): TavernTaskConfig[] {
-  const due: TavernTaskConfig[] = [];
+export interface DueTask {
+  task: TavernTaskConfig;
+  taskStateKey: string;
+  emissionKey: string;
+  scheduledTime: string;
+}
+
+export function dueTasks(config: TavernRelayConfig, state: RelayState, now = new Date()): DueTask[] {
+  const due: DueTask[] = [];
+  const graceMinutes = Math.max(0, config.schedule_grace_minutes ?? 30);
   for (const task of config.tasks) {
     if (task.enabled === false) {
       continue;
     }
     const timeZone = task.timezone || 'Asia/Shanghai';
-    if (Array.isArray(task.days) && task.days.length > 0 && !task.days.includes(localWeekday(now, timeZone))) {
+    const dateKey = localDateKey(now, timeZone);
+    if (task.date_key && task.date_key !== dateKey) {
+      continue;
+    }
+    if (!task.date_key && Array.isArray(task.days) && task.days.length > 0 && !task.days.includes(localWeekday(now, timeZone))) {
       continue;
     }
     const scheduledTime = effectiveScheduledTime(task, state, now, timeZone);
@@ -17,20 +29,35 @@ export function dueTasks(config: TavernRelayConfig, state: RelayState, now = new
       continue;
     }
     const taskStateKey = `${task.bot_id || 'default'}:${task.id}`;
-    const key = `${taskStateKey}:${localDateKey(now, timeZone)}`;
+    const key = `${taskStateKey}:${dateKey}`;
     if (state.emittedTasks[taskStateKey] === key) {
       continue;
     }
     if (wasCreatedAfterTodaysScheduledTime(task, now, timeZone, scheduledTime)) {
       continue;
     }
-    if (localHourMinute(now, timeZone) !== scheduledTime) {
+    const currentMinute = toMinuteOfDay(localHourMinute(now, timeZone));
+    const scheduledMinute = toMinuteOfDay(scheduledTime);
+    if (
+      currentMinute === null
+      || scheduledMinute === null
+      || currentMinute < scheduledMinute
+      || currentMinute - scheduledMinute > graceMinutes
+    ) {
       continue;
     }
-    state.emittedTasks[taskStateKey] = key;
-    due.push(task);
+    due.push({
+      task,
+      taskStateKey,
+      emissionKey: key,
+      scheduledTime,
+    });
   }
   return due;
+}
+
+export function markTaskEmitted(state: RelayState, dueTask: DueTask): void {
+  state.emittedTasks[dueTask.taskStateKey] = dueTask.emissionKey;
 }
 
 function effectiveScheduledTime(task: TavernTaskConfig, state: RelayState, now: Date, timeZone: string): string | null {
@@ -45,16 +72,7 @@ function effectiveScheduledTime(task: TavernTaskConfig, state: RelayState, now: 
   const existing = state.randomTaskTimes[randomKey];
   const currentMinute = toMinuteOfDay(localHourMinute(now, timeZone));
   if (isHourMinute(existing)) {
-    const existingMinute = toMinuteOfDay(existing);
-    const emittedKey = `${taskStateKey}:${dateKey}`;
-    const alreadyEmitted = state.emittedTasks[taskStateKey] === emittedKey;
-    if (
-      alreadyEmitted ||
-      currentMinute === null ||
-      (existingMinute !== null && existingMinute >= currentMinute)
-    ) {
-      return existing;
-    }
+    return existing;
   }
 
   const start = isHourMinute(task.random_window_start) ? task.random_window_start : isHourMinute(task.time) ? task.time : '09:00';

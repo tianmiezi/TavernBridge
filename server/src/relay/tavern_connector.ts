@@ -10,6 +10,14 @@ export interface TavernReply {
   status: string;
   error: string;
   wechatScopeId: string;
+  deliveryChannel: string;
+  wechatTransport: string;
+  source: string;
+  uiautoAccountId: string;
+  rawEventType: string;
+  taskId: string;
+  taskType: string;
+  followupStep: number | null;
 }
 
 export class TavernFileConnector {
@@ -63,7 +71,7 @@ export class TavernFileConnector {
     while (Date.now() <= deadline) {
       for (const candidate of candidates) {
         const reply = await readResponse(candidate);
-        if (reply?.body) {
+        if (reply && (reply.body || reply.status)) {
           return reply;
         }
       }
@@ -146,6 +154,9 @@ async function readResponse(filePath: string): Promise<TavernReply | null> {
       const body = normalizeDeliveryText(parsed.body ?? parsed.text ?? parsed.message ?? parsed.content);
       const eventId = normalizeText(parsed.event_id) ?? path.basename(filePath, path.extname(filePath));
       const rawEvent = typeof parsed.raw_event === 'object' && parsed.raw_event ? parsed.raw_event as Record<string, unknown> : {};
+      const metadata = typeof rawEvent.metadata === 'object' && rawEvent.metadata ? rawEvent.metadata as Record<string, unknown> : {};
+      const userReply = typeof rawEvent.user_reply === 'object' && rawEvent.user_reply ? rawEvent.user_reply as Record<string, unknown> : {};
+      const followupStep = Number(metadata.followup_step);
       return {
         filePath,
         eventId,
@@ -154,6 +165,14 @@ async function readResponse(filePath: string): Promise<TavernReply | null> {
         status: normalizeText(parsed.status) ?? '',
         error: normalizeText(parsed.error) ?? '',
         wechatScopeId: normalizeText(parsed.wechat_scope_id ?? rawEvent.wechat_scope_id) ?? '',
+        deliveryChannel: normalizeText(parsed.delivery_channel ?? rawEvent.delivery_channel ?? metadata.delivery_channel) ?? '',
+        wechatTransport: normalizeText(parsed.wechat_transport ?? rawEvent.wechat_transport ?? metadata.wechat_transport) ?? '',
+        source: normalizeText(userReply.source ?? metadata.source ?? rawEvent.source) ?? '',
+        uiautoAccountId: normalizeText(metadata.uiauto_account_id ?? metadata.alt_wechat_account_id) ?? '',
+        rawEventType: normalizeText(rawEvent.type) ?? '',
+        taskId: normalizeText(metadata.task_id) ?? '',
+        taskType: normalizeText(metadata.task_type) ?? '',
+        followupStep: Number.isFinite(followupStep) && followupStep > 0 ? Math.floor(followupStep) : null,
       };
     }
     const body = normalizeDeliveryText(raw);
@@ -165,6 +184,14 @@ async function readResponse(filePath: string): Promise<TavernReply | null> {
       status: 'ok',
       error: '',
       wechatScopeId: '',
+      deliveryChannel: '',
+      wechatTransport: '',
+      source: '',
+      uiautoAccountId: '',
+      rawEventType: '',
+      taskId: '',
+      taskType: '',
+      followupStep: null,
     };
   } catch (error) {
     const code = (error as { code?: string }).code;
